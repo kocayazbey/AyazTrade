@@ -82,9 +82,10 @@ export function PWAProvider({ children }: PWAProviderProps) {
             const permission = await Notification.requestPermission();
 
             if (permission === 'granted') {
+              const publicKey = await getVAPIDPublicKey();
               subscription = await registration.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: await getVAPIDPublicKey(),
+                applicationServerKey: publicKey as ArrayBuffer,
               });
 
               // Save subscription to backend
@@ -325,9 +326,10 @@ export function usePushNotifications() {
       }
 
       const registration = await navigator.serviceWorker.ready;
+      const publicKey = await getVAPIDPublicKey();
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: await getVAPIDPublicKey(),
+        applicationServerKey: publicKey as ArrayBuffer,
       });
 
       // Save subscription to backend
