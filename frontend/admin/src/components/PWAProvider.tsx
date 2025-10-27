@@ -52,11 +52,9 @@ export function PWAProvider({ children }: PWAProviderProps) {
                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
                   toast.success('Yeni güncelleme mevcut! Sayfayı yenileyin.', {
                     duration: 8000,
-                    action: {
-                      label: 'Şimdi Yenile',
-                      onClick: () => window.location.reload(),
-                    },
                   });
+                  // Auto reload after 3 seconds
+                  setTimeout(() => window.location.reload(), 3000);
                 }
               });
             }
