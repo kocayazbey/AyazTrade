@@ -85,7 +85,7 @@ export function PWAProvider({ children }: PWAProviderProps) {
               const publicKey = await getVAPIDPublicKey();
               subscription = await registration.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: publicKey as ArrayBuffer,
+                applicationServerKey: publicKey as unknown as BufferSource,
               });
 
               // Save subscription to backend
@@ -329,7 +329,7 @@ export function usePushNotifications() {
       const publicKey = await getVAPIDPublicKey();
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: publicKey as ArrayBuffer,
+        applicationServerKey: publicKey as unknown as BufferSource,
       });
 
       // Save subscription to backend
