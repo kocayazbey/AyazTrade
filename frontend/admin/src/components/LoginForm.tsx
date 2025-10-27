@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useRouter } from 'next/router';
 import { useAuth } from '../contexts/AuthContext';
 
 const LoginForm: React.FC = () => {
@@ -10,10 +10,7 @@ const LoginForm: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
 
   const { login } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const from = location.state?.from?.pathname || '/';
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,7 +21,8 @@ const LoginForm: React.FC = () => {
       const success = await login(email, password);
       
       if (success) {
-        navigate(from, { replace: true });
+        const returnUrl = router.query.returnUrl as string || '/dashboard';
+        router.push(returnUrl);
       } else {
         setError('E-posta veya şifre hatalı');
       }
