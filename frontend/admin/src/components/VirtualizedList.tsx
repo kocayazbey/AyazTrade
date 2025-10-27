@@ -31,7 +31,12 @@ export function VirtualizedList<T>({
   const listRef = useRef<List>(null);
 
   const handleScroll = useCallback(
-    ({ scrollTop, scrollHeight, clientHeight }: { scrollTop: number; scrollHeight: number; clientHeight: number }) => {
+    (props: any) => {
+      const { scrollOffset, scrollUpdateWasRequested } = props;
+      const scrollTop = scrollOffset || 0;
+      const scrollHeight = height * (items.length / height);
+      const clientHeight = height;
+      
       const isNearBottom = scrollTop + clientHeight >= scrollHeight - 100;
       
       if (isNearBottom && hasNextPage && !isLoadingMore && onLoadMore) {
@@ -39,7 +44,7 @@ export function VirtualizedList<T>({
         onLoadMore();
       }
     },
-    [hasNextPage, isLoadingMore, onLoadMore]
+    [hasNextPage, isLoadingMore, onLoadMore, height, items.length]
   );
 
   useEffect(() => {
