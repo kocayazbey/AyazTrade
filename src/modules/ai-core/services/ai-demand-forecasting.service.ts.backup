@@ -1,0 +1,1121 @@
+import { Injectable } from '@nestjs/common';
+import { DatabaseService } from '../../../core/database/database.service';
+import { CacheService } from '../../../core/cache/cache.service';
+import { LoggerService } from '../../../core/logger/logger.service';
+import { sql, eq, and, gte, lte, desc } from 'drizzle-orm';
+
+export interface DemandForecast {
+  productId: string;
+  productName: string;
+  sku: string;
+  forecastPeriod: {
+    start: Date;
+    end: Date;
+  };
+  predictions: Array<{
+    date: Date;
+    predictedDemand: number;
+    confidence: number;
+    upperBound: number;
+    lowerBound: number;
+  }>;
+  metrics: {
+    accuracy: number;
+    mape: number; // Mean Absolute Percentage Error
+    rmse: number; // Root Mean Square Error
+  };
+  trends: {
+    overall: 'increasing' | 'decreasing' | 'stable';
+    seasonal: boolean;
+    cyclical: boolean;
+    trendStrength: number;
+  };
+  seasonality: {
+    pattern: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+    strength: number;
+    peakPeriods: string[];
+    lowPeriods: string[];
+  };
+  recommendations: string[];
+}
+
+export interface ProductDemandPattern {
+  productId: string;
+  patternType: 'trend' | 'seasonal' | 'cyclical' | 'irregular' | 'constant';
+  seasonality: {
+    daily?: number[];
+    weekly?: number[];
+    monthly?: number[];
+    yearly?: number[];
+  };
+  trend: {
+    slope: number;
+    intercept: number;
+    r2: number;
+  };
+  volatility: number;
+  predictability: number;
+}
+
+export interface InventoryOptimization {
+  productId: string;
+  currentStock: number;
+  optimalStock: number;
+  reorderPoint: number;
+  reorderQuantity: number;
+  safetyStock: number;
+  leadTime: number;
+  serviceLevel: number;
+  recommendations: string[];
+}
+
+export interface DemandAlert {
+  type: 'stockout_risk' | 'overstock_risk' | 'unusual_demand' | 'seasonal_change';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  productId: string;
+  productName: string;
+  message: string;
+  predictedDate: Date;
+  currentStock: number;
+  predictedDemand: number;
+  recommendedAction: string;
+}
+
+@Injectable()
+export class AIDemandForecastingService {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly cacheService: CacheService,
+    private readonly loggerService: LoggerService,
+  ) {}
+
+  async generateDemandForecast(
+    productId: string,
+    forecastDays: number = 90,
+    tenantId: string = 'default'
+  ): Promise<DemandForecast> {
+    const cacheKey = `demand_forecast:${tenantId}:${productId}:${forecastDays}`;
+    const cached = await this.cacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      this.loggerService.log(`Generating demand forecast for product ${productId}`, 'AIDemandForecastingService');
+
+      // Get historical sales data
+      const historicalData = await this.getHistoricalSalesData(productId, tenantId, 365);
+
+      if (historicalData.length < 30) {
+        this.loggerService.warn(`Insufficient data for product ${productId}: ${historicalData.length} data points`, 'AIDemandForecastingService');
+        return this.getDefaultForecast(productId, forecastDays);
+      }
+
+      // Analyze demand patterns
+      const pattern = await this.analyzeDemandPattern(historicalData);
+
+      // Generate predictions using time series analysis
+      const predictions = await this.generateTimeSeriesPredictions(historicalData, forecastDays);
+
+      // Calculate forecast accuracy metrics
+      const metrics = await this.calculateForecastAccuracy(historicalData, predictions.slice(0, 30)); // Use first 30 days for validation
+
+      // Analyze trends
+      const trends = await this.analyzeTrends(historicalData, predictions);
+
+      // Analyze seasonality
+      const seasonality = await this.analyzeSeasonality(historicalData);
+
+      // Generate recommendations
+      const recommendations = await this.generateForecastRecommendations(pattern, trends, seasonality);
+
+      const forecast: DemandForecast = {
+        productId,
+        productName: await this.getProductName(productId),
+        sku: await this.getProductSKU(productId),
+        forecastPeriod: {
+          start: new Date(),
+          end: new Date(Date.now() + (forecastDays * 24 * 60 * 60 * 1000))
+        },
+        predictions,
+        metrics,
+        trends,
+        seasonality,
+        recommendations
+      };
+
+      await this.cacheService.set(cacheKey, forecast, 3600); // Cache for 1 hour
+      return forecast;
+
+    } catch (error) {
+      this.loggerService.error(`Error generating demand forecast for ${productId}`, error, 'AIDemandForecastingService');
+      return this.getDefaultForecast(productId, forecastDays);
+    }
+  }
+
+  async getInventoryOptimization(
+    productId: string,
+    serviceLevel: number = 0.95,
+    leadTime: number = 7,
+    tenantId: string = 'default'
+  ): Promise<InventoryOptimization> {
+    const cacheKey = `inventory_optimization:${tenantId}:${productId}:${serviceLevel}:${leadTime}`;
+    const cached = await this.cacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      // Get demand forecast
+      const forecast = await this.generateDemandForecast(productId, 90, tenantId);
+
+      // Get current inventory
+      const currentStock = await this.getCurrentStock(productId, tenantId);
+
+      // Calculate demand variability
+      const demandVariability = await this.calculateDemandVariability(productId, tenantId);
+
+      // Calculate optimal inventory levels
+      const avgDemand = forecast.predictions.reduce((sum, p) => sum + p.predictedDemand, 0) / forecast.predictions.length;
+      const stdDemand = Math.sqrt(demandVariability);
+
+      // Z-score for service level
+      const zScore = this.getZScoreForServiceLevel(serviceLevel);
+
+      // Safety stock calculation
+      const safetyStock = zScore * stdDemand * Math.sqrt(leadTime);
+
+      // Reorder point calculation
+      const reorderPoint = (avgDemand * leadTime) + safetyStock;
+
+      // Reorder quantity (Economic Order Quantity)
+      const reorderQuantity = this.calculateEOQ(avgDemand, stdDemand, leadTime);
+
+      const optimization: InventoryOptimization = {
+        productId,
+        currentStock,
+        optimalStock: reorderPoint + reorderQuantity,
+        reorderPoint: Math.round(reorderPoint),
+        reorderQuantity: Math.round(reorderQuantity),
+        safetyStock: Math.round(safetyStock),
+        leadTime,
+        serviceLevel,
+        recommendations: this.getInventoryRecommendations(currentStock, reorderPoint, reorderQuantity)
+      };
+
+      await this.cacheService.set(cacheKey, optimization, 1800); // Cache for 30 minutes
+      return optimization;
+
+    } catch (error) {
+      this.loggerService.error(`Error calculating inventory optimization for ${productId}`, error, 'AIDemandForecastingService');
+      return {
+        productId,
+        currentStock: 0,
+        optimalStock: 0,
+        reorderPoint: 0,
+        reorderQuantity: 0,
+        safetyStock: 0,
+        leadTime,
+        serviceLevel,
+        recommendations: ['Error calculating optimization']
+      };
+    }
+  }
+
+  async getDemandAlerts(tenantId: string): Promise<DemandAlert[]> {
+    const cacheKey = `demand_alerts:${tenantId}`;
+    const cached = await this.cacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      this.loggerService.log('Generating demand alerts', 'AIDemandForecastingService');
+
+      // Get all products with forecasts
+      const products = await this.getProductsWithForecasts(tenantId);
+
+      const alerts: DemandAlert[] = [];
+
+      for (const product of products) {
+        try {
+          // Get current stock
+          const currentStock = await this.getCurrentStock(product.id, tenantId);
+
+          // Get 30-day forecast
+          const forecast = await this.generateDemandForecast(product.id, 30, tenantId);
+
+          // Check for stockout risk
+          const stockoutRisk = await this.checkStockoutRisk(product.id, currentStock, forecast);
+          if (stockoutRisk.risk) {
+            alerts.push(stockoutRisk.alert);
+          }
+
+          // Check for overstock risk
+          const overstockRisk = await this.checkOverstockRisk(product.id, currentStock, forecast);
+          if (overstockRisk.risk) {
+            alerts.push(overstockRisk.alert);
+          }
+
+          // Check for unusual demand patterns
+          const unusualDemand = await this.checkUnusualDemand(product.id, forecast);
+          if (unusualDemand.risk) {
+            alerts.push(unusualDemand.alert);
+          }
+
+        } catch (error) {
+          this.loggerService.error(`Error checking alerts for product ${product.id}`, error, 'AIDemandForecastingService');
+        }
+      }
+
+      // Sort by severity and date
+      const sortedAlerts = alerts
+        .sort((a, b) => {
+          const severityOrder = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1 };
+          if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+            return severityOrder[b.severity] - severityOrder[a.severity];
+          }
+          return a.predictedDate.getTime() - b.predictedDate.getTime();
+        })
+        .slice(0, 50); // Limit to top 50 alerts
+
+      await this.cacheService.set(cacheKey, sortedAlerts, 900); // Cache for 15 minutes
+      return sortedAlerts;
+
+    } catch (error) {
+      this.loggerService.error('Error generating demand alerts', error, 'AIDemandForecastingService');
+      return [];
+    }
+  }
+
+  async getSeasonalTrends(productId: string, tenantId: string): Promise<{
+    productId: string;
+    seasonalPatterns: {
+      daily: number[];
+      weekly: number[];
+      monthly: number[];
+      yearly: number[];
+    };
+    peakSeasons: string[];
+    lowSeasons: string[];
+    trendDirection: 'increasing' | 'decreasing' | 'stable';
+    recommendations: string[];
+  }> {
+    const cacheKey = `seasonal_trends:${tenantId}:${productId}`;
+    const cached = await this.cacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      // Get historical sales data for trend analysis
+      const historicalData = await this.getHistoricalSalesData(productId, tenantId, 730); // 2 years
+
+      if (historicalData.length < 90) {
+        return {
+          productId,
+          seasonalPatterns: { daily: [], weekly: [], monthly: [], yearly: [] },
+          peakSeasons: [],
+          lowSeasons: [],
+          trendDirection: 'stable',
+          recommendations: ['Insufficient data for seasonal analysis']
+        };
+      }
+
+      // Analyze daily patterns
+      const dailyPatterns = this.analyzeDailyPatterns(historicalData);
+
+      // Analyze weekly patterns
+      const weeklyPatterns = this.analyzeWeeklyPatterns(historicalData);
+
+      // Analyze monthly patterns
+      const monthlyPatterns = this.analyzeMonthlyPatterns(historicalData);
+
+      // Analyze yearly patterns
+      const yearlyPatterns = this.analyzeYearlyPatterns(historicalData);
+
+      // Identify peak and low seasons
+      const peakSeasons = this.identifyPeakSeasons(monthlyPatterns);
+      const lowSeasons = this.identifyLowSeasons(monthlyPatterns);
+
+      // Determine overall trend
+      const trendDirection = this.determineTrendDirection(historicalData);
+
+      // Generate recommendations
+      const recommendations = this.generateSeasonalRecommendations(dailyPatterns, weeklyPatterns, monthlyPatterns, peakSeasons, lowSeasons);
+
+      const result = {
+        productId,
+        seasonalPatterns: {
+          daily: dailyPatterns,
+          weekly: weeklyPatterns,
+          monthly: monthlyPatterns,
+          yearly: yearlyPatterns
+        },
+        peakSeasons,
+        lowSeasons,
+        trendDirection,
+        recommendations
+      };
+
+      await this.cacheService.set(cacheKey, result, 7200); // Cache for 2 hours
+      return result;
+
+    } catch (error) {
+      this.loggerService.error(`Error analyzing seasonal trends for ${productId}`, error, 'AIDemandForecastingService');
+      return {
+        productId,
+        seasonalPatterns: { daily: [], weekly: [], monthly: [], yearly: [] },
+        peakSeasons: [],
+        lowSeasons: [],
+        trendDirection: 'stable',
+        recommendations: ['Error analyzing seasonal trends']
+      };
+    }
+  }
+
+  async getDemandAnalytics(tenantId: string, days: number = 90): Promise<{
+    totalProducts: number;
+    forecastAccuracy: number;
+    averageDemandVariability: number;
+    seasonalProducts: number;
+    trendingProducts: number;
+    stockoutRiskProducts: number;
+    overstockRiskProducts: number;
+    topPerformingProducts: Array<{
+      productId: string;
+      productName: string;
+      demandGrowth: number;
+      forecastAccuracy: number;
+      totalDemand: number;
+    }>;
+  }> {
+    const cacheKey = `demand_analytics:${tenantId}:${days}`;
+    const cached = await this.cacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const products = await this.getProductsWithForecasts(tenantId);
+      const analytics = {
+        totalProducts: products.length,
+        forecastAccuracy: 0,
+        averageDemandVariability: 0,
+        seasonalProducts: 0,
+        trendingProducts: 0,
+        stockoutRiskProducts: 0,
+        overstockRiskProducts: 0,
+        topPerformingProducts: []
+      };
+
+      let totalAccuracy = 0;
+      let totalVariability = 0;
+      let seasonalCount = 0;
+      let trendingCount = 0;
+      let stockoutCount = 0;
+      let overstockCount = 0;
+
+      for (const product of products) {
+        try {
+          const forecast = await this.generateDemandForecast(product.id, 30, tenantId);
+          const currentStock = await this.getCurrentStock(product.id, tenantId);
+
+          // Calculate metrics
+          totalAccuracy += forecast.metrics.accuracy;
+          totalVariability += forecast.trends.trendStrength;
+
+          if (forecast.seasonality.strength > 0.3) seasonalCount++;
+          if (forecast.trends.overall !== 'stable') trendingCount++;
+
+          // Check stock risks
+          if (currentStock < forecast.reorderPoint) stockoutCount++;
+          if (currentStock > forecast.optimalStock * 1.5) overstockCount++;
+
+          // Add to top performers if high accuracy and growth
+          if (forecast.metrics.accuracy > 0.8 && forecast.trends.overall === 'increasing') {
+            analytics.topPerformingProducts.push({
+              productId: product.id,
+              productName: product.name,
+              demandGrowth: forecast.trends.trendStrength,
+              forecastAccuracy: forecast.metrics.accuracy,
+              totalDemand: forecast.predictions.reduce((sum, p) => sum + p.predictedDemand, 0)
+            });
+          }
+
+        } catch (error) {
+          this.loggerService.error(`Error analyzing product ${product.id}`, error, 'AIDemandForecastingService');
+        }
+      }
+
+      analytics.forecastAccuracy = products.length > 0 ? totalAccuracy / products.length : 0;
+      analytics.averageDemandVariability = products.length > 0 ? totalVariability / products.length : 0;
+      analytics.seasonalProducts = seasonalCount;
+      analytics.trendingProducts = trendingCount;
+      analytics.stockoutRiskProducts = stockoutCount;
+      analytics.overstockRiskProducts = overstockCount;
+
+      // Sort top performers
+      analytics.topPerformingProducts = analytics.topPerformingProducts
+        .sort((a, b) => (b.demandGrowth * b.forecastAccuracy) - (a.demandGrowth * a.forecastAccuracy))
+        .slice(0, 10);
+
+      await this.cacheService.set(cacheKey, analytics, 3600); // Cache for 1 hour
+      return analytics;
+
+    } catch (error) {
+      this.loggerService.error('Error generating demand analytics', error, 'AIDemandForecastingService');
+      return {
+        totalProducts: 0,
+        forecastAccuracy: 0,
+        averageDemandVariability: 0,
+        seasonalProducts: 0,
+        trendingProducts: 0,
+        stockoutRiskProducts: 0,
+        overstockRiskProducts: 0,
+        topPerformingProducts: []
+      };
+    }
+  }
+
+  // Private helper methods
+  private async getHistoricalSalesData(productId: string, tenantId: string, days: number): Promise<Array<{
+    date: Date;
+    demand: number;
+    price: number;
+    promotions: boolean;
+  }>> {
+    // Get historical sales data for time series analysis
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const salesData = await this.databaseService.drizzleClient
+      .select({
+        date: sql`DATE(o.created_at)`,
+        demand: sql<number>`SUM(oi.quantity)`,
+        price: sql<number>`AVG(oi.price)`,
+        promotions: sql`COUNT(*) FILTER (WHERE o.discount > 0) > 0`
+      })
+      .from(sql`orders o`)
+      .innerJoin(sql`order_items oi`, sql`oi.order_id = o.id`)
+      .where(and(
+        sql`oi.product_id = ${productId}`,
+        sql`o.created_at >= ${startDate}`,
+        sql`o.status NOT IN ('cancelled', 'refunded')`
+      ))
+      .groupBy(sql`DATE(o.created_at)`)
+      .orderBy(sql`DATE(o.created_at)`);
+
+    return salesData.map(sale => ({
+      date: sale.date,
+      demand: Number(sale.demand) || 0,
+      price: Number(sale.price) || 0,
+      promotions: Boolean(sale.promotions)
+    }));
+  }
+
+  private async analyzeDemandPattern(historicalData: any[]): Promise<ProductDemandPattern> {
+    // Analyze demand patterns using statistical methods
+    const demands = historicalData.map(d => d.demand);
+
+    // Calculate trend
+    const trend = this.calculateLinearTrend(historicalData);
+
+    // Calculate seasonality
+    const seasonality = this.calculateSeasonality(historicalData);
+
+    // Calculate volatility
+    const volatility = this.calculateVolatility(demands);
+
+    // Determine predictability
+    const predictability = Math.max(0, 1 - volatility);
+
+    return {
+      productId: historicalData[0]?.productId || '',
+      patternType: this.determinePatternType(trend, seasonality, volatility),
+      seasonality,
+      trend,
+      volatility,
+      predictability
+    };
+  }
+
+  private async generateTimeSeriesPredictions(historicalData: any[], forecastDays: number): Promise<Array<{
+    date: Date;
+    predictedDemand: number;
+    confidence: number;
+    upperBound: number;
+    lowerBound: number;
+  }>> {
+    // Simplified time series prediction
+    // In real implementation, would use ARIMA, Prophet, or similar algorithms
+
+    const predictions = [];
+    const avgDemand = historicalData.reduce((sum, d) => sum + d.demand, 0) / historicalData.length;
+    const trend = this.calculateLinearTrend(historicalData);
+
+    for (let i = 1; i <= forecastDays; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() + i);
+
+      // Simple linear trend + seasonal adjustment
+      const trendValue = avgDemand + (trend.slope * i);
+      const seasonalAdjustment = this.getSeasonalAdjustment(date, historicalData);
+      const predictedDemand = Math.max(0, trendValue + seasonalAdjustment);
+
+      // Calculate confidence and bounds
+      const confidence = Math.max(0.5, 0.95 - (i * 0.01)); // Decreasing confidence over time
+      const standardError = Math.sqrt(this.calculateVariance(historicalData.map(d => d.demand)));
+      const margin = 1.96 * standardError * Math.sqrt(i); // 95% confidence interval
+
+      predictions.push({
+        date,
+        predictedDemand: Math.round(predictedDemand),
+        confidence,
+        upperBound: Math.round(predictedDemand + margin),
+        lowerBound: Math.round(Math.max(0, predictedDemand - margin))
+      });
+    }
+
+    return predictions;
+  }
+
+  private calculateLinearTrend(data: any[]): { slope: number; intercept: number; r2: number } {
+    // Calculate linear trend using least squares method
+    const n = data.length;
+    const x = data.map((_, i) => i);
+    const y = data.map(d => d.demand);
+
+    const sumX = x.reduce((sum, val) => sum + val, 0);
+    const sumY = y.reduce((sum, val) => sum + val, 0);
+    const sumXY = x.reduce((sum, val, i) => sum + val * y[i], 0);
+    const sumX2 = x.reduce((sum, val) => sum + val * val, 0);
+
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+
+    // Calculate R-squared
+    const yMean = sumY / n;
+    const ssRes = y.reduce((sum, val, i) => sum + Math.pow(val - (slope * x[i] + intercept), 2), 0);
+    const ssTot = y.reduce((sum, val) => sum + Math.pow(val - yMean, 2), 0);
+    const r2 = 1 - (ssRes / ssTot);
+
+    return { slope, intercept, r2 };
+  }
+
+  private calculateSeasonality(data: any[]): any {
+    // Calculate seasonal patterns for different periods
+    return {
+      daily: this.calculateDailySeasonality(data),
+      weekly: this.calculateWeeklySeasonality(data),
+      monthly: this.calculateMonthlySeasonality(data),
+      yearly: this.calculateYearlySeasonality(data)
+    };
+  }
+
+  private calculateDailySeasonality(data: any[]): number[] {
+    // Calculate average demand by hour of day
+    const hourlyDemand = new Array(24).fill(0);
+    const hourlyCount = new Array(24).fill(0);
+
+    for (const item of data) {
+      const hour = item.date.getHours();
+      hourlyDemand[hour] += item.demand;
+      hourlyCount[hour]++;
+    }
+
+    return hourlyDemand.map((demand, hour) =>
+      hourlyCount[hour] > 0 ? demand / hourlyCount[hour] : 0
+    );
+  }
+
+  private calculateWeeklySeasonality(data: any[]): number[] {
+    // Calculate average demand by day of week
+    const weeklyDemand = new Array(7).fill(0);
+    const weeklyCount = new Array(7).fill(0);
+
+    for (const item of data) {
+      const day = item.date.getDay();
+      weeklyDemand[day] += item.demand;
+      weeklyCount[day]++;
+    }
+
+    return weeklyDemand.map((demand, day) =>
+      weeklyCount[day] > 0 ? demand / weeklyCount[day] : 0
+    );
+  }
+
+  private calculateMonthlySeasonality(data: any[]): number[] {
+    // Calculate average demand by month
+    const monthlyDemand = new Array(12).fill(0);
+    const monthlyCount = new Array(12).fill(0);
+
+    for (const item of data) {
+      const month = item.date.getMonth();
+      monthlyDemand[month] += item.demand;
+      monthlyCount[month]++;
+    }
+
+    return monthlyDemand.map((demand, month) =>
+      monthlyCount[month] > 0 ? demand / monthlyCount[month] : 0
+    );
+  }
+
+  private calculateYearlySeasonality(data: any[]): number[] {
+    // Calculate seasonal index by month (yearly pattern)
+    const yearlyDemand = new Array(12).fill(0);
+    const yearlyCount = new Array(12).fill(0);
+
+    for (const item of data) {
+      const month = item.date.getMonth();
+      yearlyDemand[month] += item.demand;
+      yearlyCount[month]++;
+    }
+
+    const avgDemand = yearlyDemand.reduce((sum, demand, month) =>
+      sum + (yearlyCount[month] > 0 ? demand / yearlyCount[month] : 0), 0
+    ) / 12;
+
+    return yearlyDemand.map((demand, month) =>
+      yearlyCount[month] > 0 ? (demand / yearlyCount[month]) / avgDemand : 1
+    );
+  }
+
+  private calculateVolatility(demands: number[]): number {
+    // Calculate coefficient of variation
+    const mean = demands.reduce((sum, val) => sum + val, 0) / demands.length;
+    const variance = demands.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / demands.length;
+    const stdDev = Math.sqrt(variance);
+
+    return mean > 0 ? stdDev / mean : 0;
+  }
+
+  private calculateVariance(values: number[]): number {
+    const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+    return values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+  }
+
+  private determinePatternType(trend: any, seasonality: any, volatility: number): string {
+    if (volatility < 0.2) return 'constant';
+    if (seasonality.monthly.some(s => Math.abs(s - 1) > 0.3)) return 'seasonal';
+    if (Math.abs(trend.slope) > 0.1) return 'trend';
+    if (volatility > 0.5) return 'irregular';
+    return 'stable';
+  }
+
+  private getSeasonalAdjustment(date: Date, historicalData: any[]): number {
+    // Get seasonal adjustment based on date
+    const monthlySeasonality = this.calculateMonthlySeasonality(historicalData);
+    const monthIndex = date.getMonth();
+
+    return monthlySeasonality[monthIndex] - 1; // Subtract 1 to get adjustment from average
+  }
+
+  private async calculateForecastAccuracy(historicalData: any[], predictions: any[]): Promise<{
+    accuracy: number;
+    mape: number;
+    rmse: number;
+  }> {
+    // Calculate forecast accuracy metrics using historical data
+    if (historicalData.length < 10 || predictions.length === 0) {
+      return { accuracy: 0, mape: 0, rmse: 0 };
+    }
+
+    // Use last portion of historical data as test set
+    const testSize = Math.min(30, Math.floor(historicalData.length * 0.2));
+    const testData = historicalData.slice(-testSize);
+    const trainData = historicalData.slice(0, -testSize);
+
+    // Generate predictions for test period
+    const testPredictions = await this.generateTimeSeriesPredictions(trainData, testSize);
+
+    let totalAPE = 0; // Absolute Percentage Error
+    let totalSE = 0; // Squared Error
+
+    for (let i = 0; i < Math.min(testData.length, testPredictions.length); i++) {
+      const actual = testData[i].demand;
+      const predicted = testPredictions[i].predictedDemand;
+
+      if (actual > 0) {
+        totalAPE += Math.abs((actual - predicted) / actual);
+      }
+      totalSE += Math.pow(actual - predicted, 2);
+    }
+
+    const mape = (totalAPE / testData.length) * 100;
+    const rmse = Math.sqrt(totalSE / testData.length);
+    const accuracy = Math.max(0, 100 - mape);
+
+    return {
+      accuracy: Math.round(accuracy * 100) / 100,
+      mape: Math.round(mape * 100) / 100,
+      rmse: Math.round(rmse * 100) / 100
+    };
+  }
+
+  private async analyzeTrends(historicalData: any[], predictions: any[]): Promise<any> {
+    const trend = this.calculateLinearTrend(historicalData);
+    const currentTrend = this.calculateLinearTrend(historicalData.slice(-90)); // Last 90 days
+
+    let overall: 'increasing' | 'decreasing' | 'stable';
+    if (Math.abs(trend.slope) < 0.1) {
+      overall = 'stable';
+    } else if (trend.slope > 0) {
+      overall = 'increasing';
+    } else {
+      overall = 'decreasing';
+    }
+
+    // Check for seasonality
+    const seasonality = this.calculateMonthlySeasonality(historicalData);
+    const seasonal = seasonality.some(s => Math.abs(s - 1) > 0.2);
+
+    // Check for cyclical patterns (simplified)
+    const cyclical = this.detectCyclicalPatterns(historicalData);
+
+    return {
+      overall,
+      seasonal,
+      cyclical,
+      trendStrength: Math.abs(trend.slope)
+    };
+  }
+
+  private async analyzeSeasonality(historicalData: any[]): Promise<any> {
+    const seasonality = this.calculateSeasonality(historicalData);
+
+    // Calculate seasonality strength
+    const monthlyVariation = Math.max(...seasonality.monthly) - Math.min(...seasonality.monthly);
+    const strength = monthlyVariation / 2; // Normalize to 0-1 scale
+
+    // Identify peak and low periods
+    const peakMonths = seasonality.monthly
+      .map((val, index) => ({ month: index, value: val }))
+      .filter(item => item.value > 1.1)
+      .map(item => new Date(2000, item.month).toLocaleString('default', { month: 'long' }));
+
+    const lowMonths = seasonality.monthly
+      .map((val, index) => ({ month: index, value: val }))
+      .filter(item => item.value < 0.9)
+      .map(item => new Date(2000, item.month).toLocaleString('default', { month: 'long' }));
+
+    return {
+      pattern: strength > 0.3 ? 'monthly' : 'stable',
+      strength,
+      peakPeriods: peakMonths,
+      lowPeriods: lowMonths
+    };
+  }
+
+  private async generateForecastRecommendations(pattern: any, trends: any, seasonality: any): Promise<string[]> {
+    const recommendations = [];
+
+    if (trends.overall === 'increasing') {
+      recommendations.push('Consider increasing safety stock levels due to growing demand');
+    } else if (trends.overall === 'decreasing') {
+      recommendations.push('Monitor for potential demand decline and adjust inventory accordingly');
+    }
+
+    if (seasonality.strength > 0.5) {
+      recommendations.push(`Strong seasonal pattern detected - adjust inventory for ${seasonality.peakPeriods.join(' and ')} peak periods`);
+    }
+
+    if (pattern.volatility > 0.5) {
+      recommendations.push('High demand volatility detected - consider higher safety stock levels');
+    }
+
+    if (pattern.predictability < 0.6) {
+      recommendations.push('Low predictability - use conservative forecasting and maintain higher safety stock');
+
+    return recommendations.length > 0 ? recommendations : ['Continue current inventory management strategy'];
+  }
+
+  private async checkStockoutRisk(productId: string, currentStock: number, forecast: any): Promise<{
+    risk: boolean;
+    alert: DemandAlert;
+  }> {
+    // Check if current stock will run out before next reorder
+    const criticalPredictions = forecast.predictions.filter(p => p.lowerBound > currentStock);
+
+    if (criticalPredictions.length > 0) {
+      return {
+        risk: true,
+        alert: {
+          type: 'stockout_risk',
+          severity: currentStock === 0 ? 'critical' : 'high',
+          productId,
+          productName: forecast.productName,
+          message: `Stockout risk detected in ${criticalPredictions[0].date.toDateString()}`,
+          predictedDate: criticalPredictions[0].date,
+          currentStock,
+          predictedDemand: criticalPredictions[0].predictedDemand,
+          recommendedAction: 'Increase stock levels or adjust reorder point'
+        }
+      };
+    }
+
+    return { risk: false, alert: null };
+  }
+
+  private async checkOverstockRisk(productId: string, currentStock: number, forecast: any): Promise<{
+    risk: boolean;
+    alert: DemandAlert;
+  }> {
+    // Check if current stock is excessive compared to forecast
+    const maxPredicted = Math.max(...forecast.predictions.map(p => p.upperBound));
+
+    if (currentStock > maxPredicted * 2) {
+      return {
+        risk: true,
+        alert: {
+          type: 'overstock_risk',
+          severity: 'medium',
+          productId,
+          productName: forecast.productName,
+          message: `Potential overstock - current stock (${currentStock}) exceeds maximum forecast (${maxPredicted})`,
+          predictedDate: new Date(),
+          currentStock,
+          predictedDemand: maxPredicted,
+          recommendedAction: 'Consider stock reduction or promotional activities'
+        }
+      };
+    }
+
+    return { risk: false, alert: null };
+  }
+
+  private async checkUnusualDemand(productId: string, forecast: any): Promise<{
+    risk: boolean;
+    alert: DemandAlert;
+  }> {
+    // Check for unusual demand patterns
+    const recentDemand = forecast.predictions.slice(0, 7);
+    const avgRecent = recentDemand.reduce((sum, p) => sum + p.predictedDemand, 0) / recentDemand.length;
+    const futureDemand = forecast.predictions.slice(7, 30);
+    const avgFuture = futureDemand.reduce((sum, p) => sum + p.predictedDemand, 0) / futureDemand.length;
+
+    const demandChange = ((avgFuture - avgRecent) / avgRecent) * 100;
+
+    if (Math.abs(demandChange) > 50) { // 50% change
+      return {
+        risk: true,
+        alert: {
+          type: 'unusual_demand',
+          severity: Math.abs(demandChange) > 100 ? 'high' : 'medium',
+          productId,
+          productName: forecast.productName,
+          message: `Unusual demand pattern detected - ${demandChange > 0 ? 'increase' : 'decrease'} of ${Math.abs(demandChange).toFixed(1)}%`,
+          predictedDate: futureDemand[0]?.date || new Date(),
+          currentStock: 0,
+          predictedDemand: avgFuture,
+          recommendedAction: 'Monitor closely and adjust inventory strategy'
+        }
+      };
+    }
+
+    return { risk: false, alert: null };
+  }
+
+  private async calculateDemandVariability(productId: string, tenantId: string): Promise<number> {
+    const salesData = await this.getHistoricalSalesData(productId, tenantId, 90);
+    const demands = salesData.map(d => d.demand);
+
+    return this.calculateVariance(demands);
+  }
+
+  private getZScoreForServiceLevel(serviceLevel: number): number {
+    // Z-scores for different service levels
+    const zScores = {
+      0.90: 1.28,
+      0.95: 1.65,
+      0.97: 1.88,
+      0.99: 2.33,
+      0.999: 3.09
+    };
+
+    return zScores[serviceLevel] || 1.65;
+  }
+
+  private calculateEOQ(avgDemand: number, stdDemand: number, leadTime: number): number {
+    // Economic Order Quantity formula: EOQ = sqrt((2DS)/H)
+    // Simplified version assuming holding cost = 20% of item cost
+    const D = avgDemand * 365; // Annual demand
+    const S = 50; // Setup cost (assumed)
+    const H = 0.2; // Holding cost rate (assumed)
+
+    return Math.sqrt((2 * D * S) / H);
+  }
+
+  private getInventoryRecommendations(currentStock: number, reorderPoint: number, reorderQuantity: number): string[] {
+    const recommendations = [];
+
+    if (currentStock < reorderPoint) {
+      recommendations.push('Place reorder immediately');
+    }
+
+    if (currentStock > reorderPoint * 2) {
+      recommendations.push('Consider reducing stock levels');
+    }
+
+    if (reorderQuantity < 10) {
+      recommendations.push('Consider increasing order quantities for efficiency');
+    }
+
+    return recommendations.length > 0 ? recommendations : ['Inventory levels are optimal'];
+  }
+
+  private async getProductName(productId: string): Promise<string> {
+    const products = await this.databaseService.drizzleClient
+      .select({ name: sql`name` })
+      .from(sql`products`)
+      .where(sql`id = ${productId}`)
+      .limit(1);
+
+    return products[0]?.name || 'Unknown Product';
+  }
+
+  private async getProductSKU(productId: string): Promise<string> {
+    const products = await this.databaseService.drizzleClient
+      .select({ sku: sql`sku` })
+      .from(sql`products`)
+      .where(sql`id = ${productId}`)
+      .limit(1);
+
+    return products[0]?.sku || '';
+  }
+
+  private async getCurrentStock(productId: string, tenantId: string): Promise<number> {
+    const inventory = await this.databaseService.drizzleClient
+      .select({ stock: sql`quantity_available` })
+      .from(sql`inventory`)
+      .where(and(
+        sql`product_id = ${productId}`,
+        sql`warehouse_id = 'default'` // Would get from default warehouse
+      ))
+      .limit(1);
+
+    return Number(inventory[0]?.stock) || 0;
+  }
+
+  private async getProductsWithForecasts(tenantId: string): Promise<any[]> {
+    // Get products that have enough sales data for forecasting
+    return await this.databaseService.drizzleClient
+      .select({
+        id: sql`p.id`,
+        name: sql`p.name`,
+        sku: sql`p.sku`
+      })
+      .from(sql`products p`)
+      .innerJoin(sql`order_items oi`, sql`oi.product_id = p.id`)
+      .where(and(
+        sql`p.tenant_id = ${tenantId}`,
+        sql`p.status = 'active'`,
+        sql`oi.created_at >= CURRENT_DATE - INTERVAL '90 days'`
+      ))
+      .groupBy(sql`p.id`, sql`p.name`, sql`p.sku`)
+      .having(sql`count(*) >= 10`); // At least 10 sales in 90 days
+  }
+
+  private detectCyclicalPatterns(data: any[]): boolean {
+    // Simplified cyclical pattern detection
+    // In real implementation, would use Fourier analysis or similar
+    const demands = data.map(d => d.demand);
+    const cycles = this.findCycles(demands);
+    return cycles.length > 0;
+  }
+
+  private findCycles(data: number[]): number[] {
+    // Simplified cycle detection
+    // In real implementation, would use autocorrelation or spectral analysis
+    return [];
+  }
+
+  private getDefaultForecast(productId: string, forecastDays: number): DemandForecast {
+    return {
+      productId,
+      productName: 'Unknown Product',
+      sku: '',
+      forecastPeriod: {
+        start: new Date(),
+        end: new Date(Date.now() + (forecastDays * 24 * 60 * 60 * 1000))
+      },
+      predictions: Array.from({ length: forecastDays }, (_, i) => ({
+        date: new Date(Date.now() + (i * 24 * 60 * 60 * 1000)),
+        predictedDemand: 10, // Default demand
+        confidence: 0.5,
+        upperBound: 15,
+        lowerBound: 5
+      })),
+      metrics: {
+        accuracy: 0,
+        mape: 0,
+        rmse: 0
+      },
+      trends: {
+        overall: 'stable',
+        seasonal: false,
+        cyclical: false,
+        trendStrength: 0
+      },
+      seasonality: {
+        pattern: 'stable',
+        strength: 0,
+        peakPeriods: [],
+        lowPeriods: []
+      },
+      recommendations: ['Insufficient data for accurate forecasting']
+    };
+  }
+
+  private analyzeDailyPatterns(data: any[]): number[] {
+    return this.calculateDailySeasonality(data);
+  }
+
+  private analyzeWeeklyPatterns(data: any[]): number[] {
+    return this.calculateWeeklySeasonality(data);
+  }
+
+  private analyzeMonthlyPatterns(data: any[]): number[] {
+    return this.calculateMonthlySeasonality(data);
+  }
+
+  private analyzeYearlyPatterns(data: any[]): number[] {
+    return this.calculateYearlySeasonality(data);
+  }
+
+  private identifyPeakSeasons(monthlyPatterns: number[]): string[] {
+    return monthlyPatterns
+      .map((val, index) => ({ month: index, value: val }))
+      .filter(item => item.value > 1.1)
+      .map(item => new Date(2000, item.month).toLocaleString('default', { month: 'long' }));
+  }
+
+  private identifyLowSeasons(monthlyPatterns: number[]): string[] {
+    return monthlyPatterns
+      .map((val, index) => ({ month: index, value: val }))
+      .filter(item => item.value < 0.9)
+      .map(item => new Date(2000, item.month).toLocaleString('default', { month: 'long' }));
+  }
+
+  private determineTrendDirection(data: any[]): 'increasing' | 'decreasing' | 'stable' {
+    const trend = this.calculateLinearTrend(data);
+    if (Math.abs(trend.slope) < 0.1) return 'stable';
+    return trend.slope > 0 ? 'increasing' : 'decreasing';
+  }
+
+  private generateSeasonalRecommendations(
+    daily: number[],
+    weekly: number[],
+    monthly: number[],
+    peakSeasons: string[],
+    lowSeasons: string[]
+  ): string[] {
+    const recommendations = [];
+
+    if (peakSeasons.length > 0) {
+      recommendations.push(`Prepare for peak demand in ${peakSeasons.join(', ')}`);
+    }
+
+    if (lowSeasons.length > 0) {
+      recommendations.push(`Consider promotions during low demand periods: ${lowSeasons.join(', ')}`);
+    }
+
+    const maxDaily = Math.max(...daily);
+    const minDaily = Math.min(...daily);
+    if (maxDaily / minDaily > 2) {
+      recommendations.push('Significant daily variation detected - adjust staffing and inventory accordingly');
+    }
+
+    return recommendations.length > 0 ? recommendations : ['No significant seasonal patterns detected'];
+  }
+}

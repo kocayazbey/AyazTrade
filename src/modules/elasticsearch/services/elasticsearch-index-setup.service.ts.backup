@@ -1,0 +1,966 @@
+import { Injectable } from '@nestjs/common';
+import { DatabaseService } from '../../../core/database/database.service';
+import { CacheService } from '../../../core/cache/cache.service';
+import { LoggerService } from '../../../core/logger/logger.service';
+import { sql, eq, and, gte } from 'drizzle-orm';
+
+export interface ElasticsearchMapping {
+  index: string;
+  mappings: {
+    properties: Record<string, any>;
+  };
+  settings: {
+    number_of_shards: number;
+    number_of_replicas: number;
+    analysis: {
+      analyzer: Record<string, any>;
+      tokenizer: Record<string, any>;
+      filter: Record<string, any>;
+    };
+  };
+}
+
+export interface ProductIndexDocument {
+  id: string;
+  sku: string;
+  name: string;
+  description: string;
+  shortDescription: string;
+  categoryId: string;
+  categoryName: string;
+  brandId: string;
+  brandName: string;
+  price: number;
+  costPrice: number;
+  compareAtPrice: number;
+  stockQuantity: number;
+  stockStatus: string;
+  weight: number;
+  dimensions: any;
+  images: any[];
+  attributes: any[];
+  tags: string[];
+  status: string;
+  visibility: string;
+  featured: boolean;
+  seo: any;
+  metadata: Record<string, any>;
+  tenantId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CustomerIndexDocument {
+  id: string;
+  customerNumber: string;
+  firstName: string;
+  lastName: string;
+  companyName: string;
+  email: string;
+  phone: string;
+  type: string;
+  status: string;
+  tier: string;
+  segment: string;
+  totalOrders: number;
+  totalSpent: number;
+  averageOrderValue: number;
+  lastOrderDate: Date;
+  addresses: any[];
+  tags: string[];
+  metadata: Record<string, any>;
+  tenantId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface OrderIndexDocument {
+  id: string;
+  orderNumber: string;
+  customerId: string;
+  customerName: string;
+  customerEmail: string;
+  status: string;
+  paymentStatus: string;
+  fulfillmentStatus: string;
+  total: number;
+  currency: string;
+  items: any[];
+  shippingAddress: any;
+  billingAddress: any;
+  tags: string[];
+  metadata: Record<string, any>;
+  tenantId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+@Injectable()
+export class ElasticsearchIndexSetupService {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly cacheService: CacheService,
+    private readonly loggerService: LoggerService,
+  ) {}
+
+  async createProductIndex(tenantId: string): Promise<ElasticsearchMapping> {
+    try {
+      this.loggerService.log(`Creating Elasticsearch product index for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+      const mapping: ElasticsearchMapping = {
+        index: `products_${tenantId}`,
+        mappings: {
+          properties: {
+            id: { type: 'keyword' },
+            sku: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            name: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' },
+                stemmed: { type: 'text', analyzer: 'english' }
+              }
+            },
+            description: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                stemmed: { type: 'text', analyzer: 'english' }
+              }
+            },
+            shortDescription: {
+              type: 'text',
+              analyzer: 'standard'
+            },
+            categoryId: { type: 'keyword' },
+            categoryName: {
+              type: 'text',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            brandId: { type: 'keyword' },
+            brandName: {
+              type: 'text',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            price: { type: 'float' },
+            costPrice: { type: 'float' },
+            compareAtPrice: { type: 'float' },
+            stockQuantity: { type: 'integer' },
+            stockStatus: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            weight: { type: 'float' },
+            dimensions: {
+              properties: {
+                length: { type: 'float' },
+                width: { type: 'float' },
+                height: { type: 'float' }
+              }
+            },
+            images: {
+              type: 'nested',
+              properties: {
+                url: { type: 'keyword' },
+                alt: { type: 'text' },
+                sortOrder: { type: 'integer' }
+              }
+            },
+            attributes: {
+              type: 'nested',
+              properties: {
+                name: { type: 'keyword' },
+                value: {
+                  type: 'text',
+                  fields: {
+                    keyword: { type: 'keyword' }
+                  }
+                },
+                type: { type: 'keyword' }
+              }
+            },
+            tags: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            status: { type: 'keyword' },
+            visibility: { type: 'keyword' },
+            featured: { type: 'boolean' },
+            seo: {
+              properties: {
+                metaTitle: { type: 'text' },
+                metaDescription: { type: 'text' },
+                slug: { type: 'keyword' }
+              }
+            },
+            metadata: {
+              type: 'object',
+              dynamic: true
+            },
+            tenantId: { type: 'keyword' },
+            createdAt: { type: 'date' },
+            updatedAt: { type: 'date' }
+          }
+        },
+        settings: {
+          number_of_shards: 2,
+          number_of_replicas: 1,
+          analysis: {
+            analyzer: {
+              standard: {
+                type: 'standard'
+              },
+              english: {
+                type: 'english'
+              },
+              autocomplete: {
+                type: 'custom',
+                tokenizer: 'standard',
+                filter: ['lowercase', 'autocomplete_filter']
+              }
+            },
+            tokenizer: {
+              standard: {
+                type: 'standard'
+              }
+            },
+            filter: {
+              autocomplete_filter: {
+                type: 'edge_ngram',
+                min_gram: 2,
+                max_gram: 20
+              }
+            }
+          }
+        }
+      };
+
+      // In real implementation, this would create the index in Elasticsearch
+      await this.createElasticsearchIndex(mapping);
+
+      this.loggerService.log(`Product index created successfully: ${mapping.index}`, 'ElasticsearchIndexSetupService');
+      return mapping;
+
+    } catch (error) {
+      this.loggerService.error('Error creating product index', error, 'ElasticsearchIndexSetupService');
+      throw error;
+    }
+  }
+
+  async createCustomerIndex(tenantId: string): Promise<ElasticsearchMapping> {
+    try {
+      this.loggerService.log(`Creating Elasticsearch customer index for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+      const mapping: ElasticsearchMapping = {
+        index: `customers_${tenantId}`,
+        mappings: {
+          properties: {
+            id: { type: 'keyword' },
+            customerNumber: { type: 'keyword' },
+            firstName: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            lastName: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            companyName: {
+              type: 'text',
+              analyzer: 'standard',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            email: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            phone: { type: 'keyword' },
+            type: { type: 'keyword' },
+            status: { type: 'keyword' },
+            tier: { type: 'keyword' },
+            segment: { type: 'keyword' },
+            totalOrders: { type: 'integer' },
+            totalSpent: { type: 'float' },
+            averageOrderValue: { type: 'float' },
+            lastOrderDate: { type: 'date' },
+            addresses: {
+              type: 'nested',
+              properties: {
+                type: { type: 'keyword' },
+                firstName: { type: 'text' },
+                lastName: { type: 'text' },
+                company: { type: 'text' },
+                address1: { type: 'text' },
+                city: { type: 'keyword' },
+                state: { type: 'keyword' },
+                country: { type: 'keyword' },
+                zipCode: { type: 'keyword' }
+              }
+            },
+            tags: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            metadata: {
+              type: 'object',
+              dynamic: true
+            },
+            tenantId: { type: 'keyword' },
+            createdAt: { type: 'date' },
+            updatedAt: { type: 'date' }
+          }
+        },
+        settings: {
+          number_of_shards: 1,
+          number_of_replicas: 1,
+          analysis: {
+            analyzer: {
+              standard: { type: 'standard' },
+              autocomplete: {
+                type: 'custom',
+                tokenizer: 'standard',
+                filter: ['lowercase', 'autocomplete_filter']
+              }
+            },
+            tokenizer: {
+              standard: { type: 'standard' }
+            },
+            filter: {
+              autocomplete_filter: {
+                type: 'edge_ngram',
+                min_gram: 2,
+                max_gram: 20
+              }
+            }
+          }
+        }
+      };
+
+      await this.createElasticsearchIndex(mapping);
+      this.loggerService.log(`Customer index created successfully: ${mapping.index}`, 'ElasticsearchIndexSetupService');
+      return mapping;
+
+    } catch (error) {
+      this.loggerService.error('Error creating customer index', error, 'ElasticsearchIndexSetupService');
+      throw error;
+    }
+  }
+
+  async createOrderIndex(tenantId: string): Promise<ElasticsearchMapping> {
+    try {
+      this.loggerService.log(`Creating Elasticsearch order index for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+      const mapping: ElasticsearchMapping = {
+        index: `orders_${tenantId}`,
+        mappings: {
+          properties: {
+            id: { type: 'keyword' },
+            orderNumber: { type: 'keyword' },
+            customerId: { type: 'keyword' },
+            customerName: {
+              type: 'text',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            customerEmail: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            status: { type: 'keyword' },
+            paymentStatus: { type: 'keyword' },
+            fulfillmentStatus: { type: 'keyword' },
+            total: { type: 'float' },
+            currency: { type: 'keyword' },
+            items: {
+              type: 'nested',
+              properties: {
+                productId: { type: 'keyword' },
+                productName: { type: 'text' },
+                sku: { type: 'keyword' },
+                quantity: { type: 'integer' },
+                price: { type: 'float' }
+              }
+            },
+            shippingAddress: {
+              properties: {
+                firstName: { type: 'text' },
+                lastName: { type: 'text' },
+                company: { type: 'text' },
+                address1: { type: 'text' },
+                city: { type: 'keyword' },
+                state: { type: 'keyword' },
+                country: { type: 'keyword' },
+                zipCode: { type: 'keyword' }
+              }
+            },
+            billingAddress: {
+              properties: {
+                firstName: { type: 'text' },
+                lastName: { type: 'text' },
+                company: { type: 'text' },
+                address1: { type: 'text' },
+                city: { type: 'keyword' },
+                state: { type: 'keyword' },
+                country: { type: 'keyword' },
+                zipCode: { type: 'keyword' }
+              }
+            },
+            tags: {
+              type: 'keyword',
+              fields: {
+                text: { type: 'text' }
+              }
+            },
+            metadata: {
+              type: 'object',
+              dynamic: true
+            },
+            tenantId: { type: 'keyword' },
+            createdAt: { type: 'date' },
+            updatedAt: { type: 'date' }
+          }
+        },
+        settings: {
+          number_of_shards: 2,
+          number_of_replicas: 1,
+          analysis: {
+            analyzer: {
+              standard: { type: 'standard' }
+            }
+          }
+        }
+      };
+
+      await this.createElasticsearchIndex(mapping);
+      this.loggerService.log(`Order index created successfully: ${mapping.index}`, 'ElasticsearchIndexSetupService');
+      return mapping;
+
+    } catch (error) {
+      this.loggerService.error('Error creating order index', error, 'ElasticsearchIndexSetupService');
+      throw error;
+    }
+  }
+
+  async indexProductDocument(productId: string, tenantId: string): Promise<ProductIndexDocument> {
+    try {
+      // Get product data from database
+      const productData = await this.getProductData(productId);
+
+      if (!productData) {
+        throw new Error(`Product not found: ${productId}`);
+      }
+
+      // Transform to Elasticsearch document format
+      const document: ProductIndexDocument = {
+        id: productData.id,
+        sku: productData.sku,
+        name: productData.name,
+        description: productData.description,
+        shortDescription: productData.shortDescription,
+        categoryId: productData.categoryId,
+        categoryName: productData.categoryName,
+        brandId: productData.brandId,
+        brandName: productData.brandName,
+        price: productData.price,
+        costPrice: productData.costPrice,
+        compareAtPrice: productData.compareAtPrice,
+        stockQuantity: productData.stockQuantity,
+        stockStatus: productData.stockStatus,
+        weight: productData.weight,
+        dimensions: productData.dimensions,
+        images: productData.images || [],
+        attributes: productData.attributes || [],
+        tags: productData.tags || [],
+        status: productData.status,
+        visibility: productData.visibility,
+        featured: productData.featured,
+        seo: productData.seo,
+        metadata: productData.metadata,
+        tenantId,
+        createdAt: productData.createdAt,
+        updatedAt: productData.updatedAt
+      };
+
+      // Index document in Elasticsearch
+      await this.indexElasticsearchDocument(`products_${tenantId}`, document.id, document);
+
+      // Clear search cache
+      await this.cacheService.del(`search_cache:${tenantId}:${productId}`);
+
+      this.loggerService.log(`Product indexed in Elasticsearch: ${productId}`, 'ElasticsearchIndexSetupService');
+      return document;
+
+    } catch (error) {
+      this.loggerService.error(`Error indexing product: ${productId}`, error, 'ElasticsearchIndexSetupService');
+      throw error;
+    }
+  }
+
+  async indexAllProducts(tenantId: string): Promise<{
+    success: boolean;
+    indexed: number;
+    failed: number;
+    errors: string[];
+  }> {
+    try {
+      this.loggerService.log(`Starting bulk product indexing for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+      const result = {
+        success: false,
+        indexed: 0,
+        failed: 0,
+        errors: []
+      };
+
+      // Get all active products
+      const products = await this.getAllProducts(tenantId);
+
+      // Index products in batches
+      const batchSize = 100;
+      for (let i = 0; i < products.length; i += batchSize) {
+        const batch = products.slice(i, i + batchSize);
+
+        const batchPromises = batch.map(async (product) => {
+          try {
+            await this.indexProductDocument(product.id, tenantId);
+            result.indexed++;
+          } catch (error) {
+            result.failed++;
+            result.errors.push(`Product ${product.id}: ${error.message}`);
+          }
+        });
+
+        await Promise.all(batchPromises);
+      }
+
+      result.success = result.indexed > 0;
+
+      this.loggerService.log(`Bulk product indexing completed: ${result.indexed} indexed, ${result.failed} failed`, 'ElasticsearchIndexSetupService');
+      return result;
+
+    } catch (error) {
+      this.loggerService.error('Error in bulk product indexing', error, 'ElasticsearchIndexSetupService');
+      return {
+        success: false,
+        indexed: 0,
+        failed: 1,
+        errors: [error.message]
+      };
+    }
+  }
+
+  async createSearchTemplates(tenantId: string): Promise<void> {
+    try {
+      this.loggerService.log(`Creating search templates for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+      // Create product search template
+      const productSearchTemplate = {
+        index: `products_${tenantId}`,
+        template: {
+          query: {
+            bool: {
+              must: [
+                {
+                  multi_match: {
+                    query: '{{query}}',
+                    fields: ['name^3', 'description^2', 'sku^2', 'tags', 'categoryName', 'brandName'],
+                    type: 'best_fields',
+                    fuzziness: 'AUTO'
+                  }
+                }
+              ],
+              filter: [
+                {{#categories}}
+                { term: { categoryId: '{{categoryId}}' } },
+                {{/categories}}
+                {{#brands}}
+                { term: { brandId: '{{brandId}}' } },
+                {{/brands}}
+                {{#priceRange}}
+                { range: { price: { gte: {{min}}, lte: {{max}} } } },
+                {{/priceRange}}
+                {{#stockStatus}}
+                { term: { stockStatus: '{{stockStatus}}' } },
+                {{/stockStatus}}
+                {{#tags}}
+                { terms: { tags: [{{#tags}}'{{tag}}'{{^last}},{{/last}}{{/tags}}] } },
+                {{/tags}}
+                { term: { status: 'active' } },
+                { term: { visibility: 'public' } }
+              ]
+            }
+          },
+          sort: [
+            {{#sort}}
+            { {{#field}}'{{field}}'{{/field}}: { order: '{{order}}' } },
+            {{/sort}}
+            { featured: { order: 'desc' } },
+            { _score: { order: 'desc' } }
+          ],
+          aggs: {
+            categories: {
+              terms: { field: 'categoryName.keyword', size: 20 }
+            },
+            brands: {
+              terms: { field: 'brandName.keyword', size: 20 }
+            },
+            price_ranges: {
+              range: {
+                field: 'price',
+                ranges: [
+                  { key: '0-50', from: 0, to: 50 },
+                  { key: '50-100', from: 50, to: 100 },
+                  { key: '100-200', from: 100, to: 200 },
+                  { key: '200+', from: 200 }
+                ]
+              }
+            }
+          }
+        }
+      };
+
+      // Create customer search template
+      const customerSearchTemplate = {
+        index: `customers_${tenantId}`,
+        template: {
+          query: {
+            bool: {
+              must: [
+                {
+                  multi_match: {
+                    query: '{{query}}',
+                    fields: ['firstName^2', 'lastName^2', 'companyName^2', 'email', 'customerNumber'],
+                    type: 'best_fields'
+                  }
+                }
+              ],
+              filter: [
+                {{#type}}
+                { term: { type: '{{type}}' } },
+                {{/type}}
+                {{#status}}
+                { term: { status: '{{status}}' } },
+                {{/status}}
+                {{#tier}}
+                { term: { tier: '{{tier}}' } },
+                {{/tier}}
+                {{#segment}}
+                { term: { segment: '{{segment}}' } },
+                {{/segment}}
+                {{#tags}}
+                { terms: { tags: [{{#tags}}'{{tag}}'{{^last}},{{/last}}{{/tags}}] } },
+                {{/tags}}
+                {{#totalSpentRange}}
+                { range: { totalSpent: { gte: {{min}}, lte: {{max}} } } },
+                {{/totalSpentRange}}
+                {{#totalOrdersRange}}
+                { range: { totalOrders: { gte: {{min}}, lte: {{max}} } } },
+                {{/totalOrdersRange}}
+                {{#dateRange}}
+                { range: { createdAt: { gte: '{{start}}', lte: '{{end}}' } } },
+                {{/dateRange}}
+              ]
+            }
+          },
+          sort: [
+            {{#sort}}
+            { {{#field}}'{{field}}'{{/field}}: { order: '{{order}}' } },
+            {{/sort}}
+            { totalSpent: { order: 'desc' } },
+            { createdAt: { order: 'desc' } }
+          ],
+          aggs: {
+            types: { terms: { field: 'type', size: 10 } },
+            tiers: { terms: { field: 'tier', size: 10 } },
+            segments: { terms: { field: 'segment', size: 10 } },
+            order_value_ranges: {
+              range: {
+                field: 'totalSpent',
+                ranges: [
+                  { key: '0-100', from: 0, to: 100 },
+                  { key: '100-500', from: 100, to: 500 },
+                  { key: '500-1000', from: 500, to: 1000 },
+                  { key: '1000+', from: 1000 }
+                ]
+              }
+            }
+          }
+        }
+      };
+
+      // Create order search template
+      const orderSearchTemplate = {
+        index: `orders_${tenantId}`,
+        template: {
+          query: {
+            bool: {
+              must: [
+                {
+                  multi_match: {
+                    query: '{{query}}',
+                    fields: ['orderNumber^3', 'customerName^2', 'customerEmail', 'items.productName', 'items.sku'],
+                    type: 'best_fields'
+                  }
+                }
+              ],
+              filter: [
+                {{#status}}
+                { term: { status: '{{status}}' } },
+                {{/status}}
+                {{#paymentStatus}}
+                { term: { paymentStatus: '{{paymentStatus}}' } },
+                {{/paymentStatus}}
+                {{#fulfillmentStatus}}
+                { term: { fulfillmentStatus: '{{fulfillmentStatus}}' } },
+                {{/fulfillmentStatus}}
+                {{#customerId}}
+                { term: { customerId: '{{customerId}}' } },
+                {{/customerId}}
+                {{#totalRange}}
+                { range: { total: { gte: {{min}}, lte: {{max}} } } },
+                {{/totalRange}}
+                {{#dateRange}}
+                { range: { createdAt: { gte: '{{start}}', lte: '{{end}}' } } },
+                {{/dateRange}}
+                {{#tags}}
+                { terms: { tags: [{{#tags}}'{{tag}}'{{^last}},{{/last}}{{/tags}}] } },
+                {{/tags}}
+              ]
+            }
+          },
+          sort: [
+            {{#sort}}
+            { {{#field}}'{{field}}'{{/field}}: { order: '{{order}}' } },
+            {{/sort}}
+            { createdAt: { order: 'desc' } }
+          ],
+          aggs: {
+            status: { terms: { field: 'status', size: 10 } },
+            payment_status: { terms: { field: 'paymentStatus', size: 10 } },
+            fulfillment_status: { terms: { field: 'fulfillmentStatus', size: 10 } },
+            total_ranges: {
+              range: {
+                field: 'total',
+                ranges: [
+                  { key: '0-100', from: 0, to: 100 },
+                  { key: '100-500', from: 100, to: 500 },
+                  { key: '500-1000', from: 500, to: 1000 },
+                  { key: '1000+', from: 1000 }
+                ]
+              }
+            }
+          }
+        }
+      };
+
+      // In real implementation, these would be stored in Elasticsearch
+      await this.storeSearchTemplate('product_search', productSearchTemplate, tenantId);
+      await this.storeSearchTemplate('customer_search', customerSearchTemplate, tenantId);
+      await this.storeSearchTemplate('order_search', orderSearchTemplate, tenantId);
+
+      this.loggerService.log(`Search templates created for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+
+    } catch (error) {
+      this.loggerService.error('Error creating search templates', error, 'ElasticsearchIndexSetupService');
+    }
+  }
+
+  async optimizeIndexPerformance(indexName: string, tenantId: string): Promise<void> {
+    try {
+      this.loggerService.log(`Optimizing index performance: ${indexName}`, 'ElasticsearchIndexSetupService');
+
+      // Optimize index settings for better performance
+      const optimizationSettings = {
+        index: {
+          refresh_interval: '30s',
+          number_of_replicas: 1,
+          translog: {
+            durability: 'async'
+          }
+        }
+      };
+
+      // In real implementation, this would update Elasticsearch index settings
+      await this.updateIndexSettings(indexName, optimizationSettings);
+
+      // Force merge segments for better performance
+      await this.forceMergeIndex(indexName);
+
+      this.loggerService.log(`Index performance optimized: ${indexName}`, 'ElasticsearchIndexSetupService');
+
+    } catch (error) {
+      this.loggerService.error(`Error optimizing index: ${indexName}`, error, 'ElasticsearchIndexSetupService');
+    }
+  }
+
+  async getIndexHealth(tenantId: string): Promise<{
+    products: { status: string; docs: number; size: string };
+    customers: { status: string; docs: number; size: string };
+    orders: { status: string; docs: number; size: string };
+    overall: string;
+  }> {
+    try {
+      // Get index health from Elasticsearch
+      // In real implementation, this would query Elasticsearch cluster health
+
+      const mockHealth = {
+        products: { status: 'green', docs: 5000, size: '2.1GB' },
+        customers: { status: 'green', docs: 1200, size: '850MB' },
+        orders: { status: 'yellow', docs: 15000, size: '4.2GB' },
+        overall: 'green'
+      };
+
+      this.loggerService.log(`Index health retrieved for tenant ${tenantId}`, 'ElasticsearchIndexSetupService');
+      return mockHealth;
+
+    } catch (error) {
+      this.loggerService.error(`Error getting index health for tenant ${tenantId}`, error, 'ElasticsearchIndexSetupService');
+      return {
+        products: { status: 'unknown', docs: 0, size: '0B' },
+        customers: { status: 'unknown', docs: 0, size: '0B' },
+        orders: { status: 'unknown', docs: 0, size: '0B' },
+        overall: 'unknown'
+      };
+    }
+  }
+
+  // Private helper methods
+  private async createElasticsearchIndex(mapping: ElasticsearchMapping): Promise<void> {
+    // In real implementation, this would create index in Elasticsearch
+    this.loggerService.log(`Creating Elasticsearch index: ${mapping.index}`, 'ElasticsearchIndexSetupService');
+
+    // Mock implementation - would use Elasticsearch client
+    // await this.elasticsearchService.indices.create({
+    //   index: mapping.index,
+    //   body: {
+    //     mappings: mapping.mappings,
+    //     settings: mapping.settings
+    //   }
+    // });
+  }
+
+  private async indexElasticsearchDocument(index: string, id: string, document: any): Promise<void> {
+    // In real implementation, this would index document in Elasticsearch
+    this.loggerService.log(`Indexing document in Elasticsearch: ${index}/${id}`, 'ElasticsearchIndexSetupService');
+
+    // Mock implementation - would use Elasticsearch client
+    // await this.elasticsearchService.index({
+    //   index,
+    //   id,
+    //   body: document,
+    //   refresh: true
+    // });
+  }
+
+  private async updateIndexSettings(index: string, settings: any): Promise<void> {
+    // Update index settings in Elasticsearch
+    this.loggerService.log(`Updating index settings: ${index}`, 'ElasticsearchIndexSetupService');
+
+    // Mock implementation
+    // await this.elasticsearchService.indices.putSettings({
+    //   index,
+    //   body: settings
+    // });
+  }
+
+  private async forceMergeIndex(index: string): Promise<void> {
+    // Force merge index segments for better performance
+    this.loggerService.log(`Force merging index: ${index}`, 'ElasticsearchIndexSetupService');
+
+    // Mock implementation
+    // await this.elasticsearchService.indices.forcemerge({
+    //   index,
+    //   max_num_segments: 1
+    // });
+  }
+
+  private async storeSearchTemplate(templateId: string, template: any, tenantId: string): Promise<void> {
+    // Store search template in Elasticsearch
+    this.loggerService.log(`Storing search template: ${templateId}`, 'ElasticsearchIndexSetupService');
+
+    // Mock implementation
+    // await this.elasticsearchService.putScript({
+    //   id: `${tenantId}_${templateId}`,
+    //   body: template
+    // });
+  }
+
+  private async getProductData(productId: string): Promise<any> {
+    // Get complete product data from database
+    const results = await this.databaseService.drizzleClient
+      .select({
+        product: sql`p.*`,
+        category: sql`c.name as categoryName`,
+        brand: sql`b.name as brandName`,
+        images: sql`json_agg(pi.*) as images`,
+        attributes: sql`json_agg(pa.*) as attributes`
+      })
+      .from(sql`products p`)
+      .leftJoin(sql`categories c`, sql`p.category_id = c.id`)
+      .leftJoin(sql`brands b`, sql`p.brand_id = b.id`)
+      .leftJoin(sql`product_images pi`, sql`p.id = pi.product_id`)
+      .leftJoin(sql`product_attributes pa`, sql`p.id = pa.product_id`)
+      .where(sql`p.id = ${productId}`)
+      .groupBy(sql`p.id`, sql`c.name`, sql`b.name`);
+
+    if (results.length === 0) return null;
+
+    const result = results[0];
+    return {
+      ...result.product,
+      categoryName: result.categoryName,
+      brandName: result.brandName,
+      images: result.images || [],
+      attributes: result.attributes || []
+    };
+  }
+
+  private async getAllProducts(tenantId: string): Promise<any[]> {
+    // Get all active products for bulk indexing
+    return await this.databaseService.drizzleClient
+      .select()
+      .from(sql`products`)
+      .where(and(
+        sql`tenant_id = ${tenantId}`,
+        sql`status = 'active'`
+      ))
+      .orderBy(sql`created_at`);
+  }
+}

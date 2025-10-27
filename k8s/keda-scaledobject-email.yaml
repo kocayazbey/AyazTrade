@@ -1,0 +1,20 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ayaztrade-api-email-queue
+  namespace: ayaztrade
+spec:
+  scaleTargetRef:
+    name: ayaztrade-api
+  pollingInterval: 15
+  cooldownPeriod: 60
+  minReplicaCount: 3
+  maxReplicaCount: 20
+  triggers:
+  - type: redis
+    metadata:
+      addressFromEnv: REDIS_HOST
+      portFromEnv: REDIS_PORT
+      listName: bull:email:wait
+      listLength: "50"
+

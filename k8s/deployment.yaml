@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ayaztrade-api
+  labels:
+    app: ayaztrade-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ayaztrade-api
+  template:
+    metadata:
+      labels:
+        app: ayaztrade-api
+    spec:
+      containers:
+      - name: api
+        image: ayaztrade/api:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: OTEL_SERVICE_NAME
+          value: "ayaztrade-backend"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: NODE_ENV
+          - name: DATABASE_URL
+            valueFrom:
+              configMapKeyRef:
+                name: ayaztrade-config
+                key: DATABASE_URL
+          - name: DATABASE_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: ayaztrade-config
+                key: DATABASE_HOST
+        - name: DATABASE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: DATABASE_PORT
+        - name: DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: DATABASE_NAME
+        - name: DATABASE_USER
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: DATABASE_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: DATABASE_PASSWORD
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: ayaztrade-config
+              key: REDIS_PORT
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: REDIS_PASSWORD
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: JWT_SECRET
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: STRIPE_SECRET_KEY
+        - name: IYZICO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: IYZICO_SECRET_KEY
+        - name: EMAIL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: EMAIL_PASSWORD
+        - name: SMS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ayaztrade-secrets
+              key: SMS_API_KEY
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health/live
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: backups
+          mountPath: /app/backups
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: backups
+        persistentVolumeClaim:
+          claimName: ayaztrade-backups-pvc

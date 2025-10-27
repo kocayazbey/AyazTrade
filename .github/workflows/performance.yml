@@ -1,0 +1,612 @@
+name: Performance Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * 0' # Weekly on Sunday at 2 AM
+  workflow_dispatch:
+    inputs:
+      test-type:
+        description: 'Type of performance test to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - load
+          - stress
+          - spike
+          - volume
+          - endurance
+
+env:
+  NODE_VERSION: '18'
+  POSTGRES_VERSION: '13'
+  REDIS_VERSION: '6'
+  ELASTICSEARCH_VERSION: '7.15.0'
+
+jobs:
+  # Load testing
+  load-test:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test-type == 'all' || github.event.inputs.test-type == 'load' || github.event.inputs.test-type == ''
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ayaztrade_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:${{ env.REDIS_VERSION }}
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:${{ env.ELASTICSEARCH_VERSION }}
+        env:
+          discovery.type: single-node
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+        options: >-
+          --health-cmd "curl -f http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+        ports:
+          - 9200:9200
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for services
+        run: |
+          npx wait-port 5432
+          npx wait-port 6379
+          npx wait-port 9200
+
+      - name: Run database migrations
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          ELASTICSEARCH_NODE: http://localhost:9200
+
+      - name: Start application
+        run: npm run start:dev &
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          ELASTICSEARCH_NODE: http://localhost:9200
+
+      - name: Wait for application
+        run: npx wait-port 3000
+
+      - name: Run load tests
+        run: npm run test:performance:load
+        env:
+          API_URL: http://localhost:3000
+          CONCURRENT_USERS: 10
+          REQUESTS_PER_USER: 100
+          RAMP_UP_TIME: 30
+          TEST_DURATION: 300
+
+      - name: Upload load test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: test-results/load-test-*.json
+
+  # Stress testing
+  stress-test:
+    name: Stress Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test-type == 'all' || github.event.inputs.test-type == 'stress' || github.event.inputs.test-type == ''
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ayaztrade_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:${{ env.REDIS_VERSION }}
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for services
+        run: |
+          npx wait-port 5432
+          npx wait-port 6379
+
+      - name: Run database migrations
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Start application
+        run: npm run start:dev &
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Wait for application
+        run: npx wait-port 3000
+
+      - name: Run stress tests
+        run: npm run test:performance:stress
+        env:
+          API_URL: http://localhost:3000
+          MAX_CONCURRENT_USERS: 100
+          STRESS_DURATION: 600
+
+      - name: Upload stress test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-test-results
+          path: test-results/stress-test-*.json
+
+  # Spike testing
+  spike-test:
+    name: Spike Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test-type == 'all' || github.event.inputs.test-type == 'spike' || github.event.inputs.test-type == ''
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ayaztrade_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:${{ env.REDIS_VERSION }}
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for services
+        run: |
+          npx wait-port 5432
+          npx wait-port 6379
+
+      - name: Run database migrations
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Start application
+        run: npm run start:dev &
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Wait for application
+        run: npx wait-port 3000
+
+      - name: Run spike tests
+        run: npm run test:performance:spike
+        env:
+          API_URL: http://localhost:3000
+          SPIKE_USERS: 200
+          SPIKE_DURATION: 120
+
+      - name: Upload spike test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-test-results
+          path: test-results/spike-test-*.json
+
+  # Volume testing
+  volume-test:
+    name: Volume Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test-type == 'all' || github.event.inputs.test-type == 'volume' || github.event.inputs.test-type == ''
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ayaztrade_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:${{ env.REDIS_VERSION }}
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for services
+        run: |
+          npx wait-port 5432
+          npx wait-port 6379
+
+      - name: Run database migrations
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Start application
+        run: npm run start:dev &
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Wait for application
+        run: npx wait-port 3000
+
+      - name: Run volume tests
+        run: npm run test:performance:volume
+        env:
+          API_URL: http://localhost:3000
+          VOLUME_REQUESTS: 10000
+          VOLUME_DURATION: 1800
+
+      - name: Upload volume test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-test-results
+          path: test-results/volume-test-*.json
+
+  # Endurance testing
+  endurance-test:
+    name: Endurance Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test-type == 'all' || github.event.inputs.test-type == 'endurance' || github.event.inputs.test-type == ''
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ayaztrade_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:${{ env.REDIS_VERSION }}
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for services
+        run: |
+          npx wait-port 5432
+          npx wait-port 6379
+
+      - name: Run database migrations
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Start application
+        run: npm run start:dev &
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          DB_DATABASE: ayaztrade_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Wait for application
+        run: npx wait-port 3000
+
+      - name: Run endurance tests
+        run: npm run test:performance:endurance
+        env:
+          API_URL: http://localhost:3000
+          ENDURANCE_DURATION: 3600
+          ENDURANCE_USERS: 20
+
+      - name: Upload endurance test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: endurance-test-results
+          path: test-results/endurance-test-*.json
+
+  # Performance monitoring
+  performance-monitoring:
+    name: Performance Monitoring
+    runs-on: ubuntu-latest
+    needs: [load-test, stress-test, spike-test, volume-test, endurance-test]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          path: test-results
+
+      - name: Generate performance report
+        run: |
+          echo "# Performance Test Report" > performance-report.md
+          echo "Generated on: $(date)" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "## Test Results Summary" >> performance-report.md
+          echo "- Load Test: ${{ needs.load-test.result }}" >> performance-report.md
+          echo "- Stress Test: ${{ needs.stress-test.result }}" >> performance-report.md
+          echo "- Spike Test: ${{ needs.spike-test.result }}" >> performance-report.md
+          echo "- Volume Test: ${{ needs.volume-test.result }}" >> performance-report.md
+          echo "- Endurance Test: ${{ needs.endurance-test.result }}" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "## Performance Metrics" >> performance-report.md
+          echo "### Load Test Results" >> performance-report.md
+          if [ -f test-results/load-test-results/load-test-*.json ]; then
+            echo "```json" >> performance-report.md
+            cat test-results/load-test-results/load-test-*.json >> performance-report.md
+            echo "```" >> performance-report.md
+          fi
+          echo "" >> performance-report.md
+          echo "### Stress Test Results" >> performance-report.md
+          if [ -f test-results/stress-test-results/stress-test-*.json ]; then
+            echo "```json" >> performance-report.md
+            cat test-results/stress-test-results/stress-test-*.json >> performance-report.md
+            echo "```" >> performance-report.md
+          fi
+
+      - name: Upload performance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: performance-report.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('performance-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+  # Performance regression detection
+  performance-regression:
+    name: Performance Regression Detection
+    runs-on: ubuntu-latest
+    needs: [load-test, stress-test, spike-test, volume-test, endurance-test]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          path: test-results
+
+      - name: Compare with baseline
+        run: |
+          # Compare current results with baseline
+          if [ -f test-results/load-test-results/load-test-*.json ]; then
+            # Extract key metrics
+            CURRENT_RPS=$(jq -r '.requestsPerSecond' test-results/load-test-results/load-test-*.json)
+            CURRENT_AVG_RT=$(jq -r '.averageResponseTime' test-results/load-test-results/load-test-*.json)
+            
+            # Compare with baseline (if exists)
+            if [ -f baseline/load-test-baseline.json ]; then
+              BASELINE_RPS=$(jq -r '.requestsPerSecond' baseline/load-test-baseline.json)
+              BASELINE_AVG_RT=$(jq -r '.averageResponseTime' baseline/load-test-baseline.json)
+              
+              # Calculate regression
+              RPS_REGRESSION=$(echo "scale=2; ($CURRENT_RPS - $BASELINE_RPS) / $BASELINE_RPS * 100" | bc)
+              RT_REGRESSION=$(echo "scale=2; ($CURRENT_AVG_RT - $BASELINE_AVG_RT) / $BASELINE_AVG_RT * 100" | bc)
+              
+              echo "RPS Regression: $RPS_REGRESSION%"
+              echo "Response Time Regression: $RT_REGRESSION%"
+              
+              # Fail if regression is significant
+              if (( $(echo "$RPS_REGRESSION < -10" | bc -l) )); then
+                echo "Significant RPS regression detected"
+                exit 1
+              fi
+              
+              if (( $(echo "$RT_REGRESSION > 20" | bc -l) )); then
+                echo "Significant response time regression detected"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Update baseline
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Update baseline with current results
+          mkdir -p baseline
+          if [ -f test-results/load-test-results/load-test-*.json ]; then
+            cp test-results/load-test-results/load-test-*.json baseline/load-test-baseline.json
+          fi
+          if [ -f test-results/stress-test-results/stress-test-*.json ]; then
+            cp test-results/stress-test-results/stress-test-*.json baseline/stress-test-baseline.json
+          fi
+
+      - name: Upload baseline
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-baseline
+          path: baseline

@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-ios-gray-200;
+  }
+  body {
+    @apply bg-ios-gray-50 text-ios-gray-900;
+  }
+}
+
+@layer components {
+  .ios-card {
+    @apply bg-white rounded-ios-lg shadow-ios border border-ios-gray-200;
+  }
+  .ayaz-card {
+    @apply bg-white rounded-ayaz-lg shadow-ayaz border border-ayaz-gray-200;
+  }
+  
+  .ios-button {
+    @apply px-4 py-2 rounded-ios font-medium transition-all duration-200;
+  }
+  .ayaz-button {
+    @apply px-4 py-2 rounded-ayaz font-medium transition-all duration-200;
+  }
+  
+  .ios-button-primary {
+    @apply bg-ios-blue text-white hover:bg-opacity-90 shadow-ios-md;
+  }
+  .ayaz-button-primary {
+    @apply bg-ayaz-blue text-white hover:bg-ayaz-blue/90 shadow-ayaz-md;
+  }
+  
+  .ios-button-secondary {
+    @apply bg-ios-gray-100 text-ios-gray-700 hover:bg-ios-gray-200;
+  }
+  .ayaz-button-secondary {
+    @apply bg-ayaz-gray-100 text-ayaz-gray-700 hover:bg-ayaz-gray-200;
+  }
+  
+  .ios-input {
+    @apply w-full px-4 py-2.5 rounded-ios border border-ios-gray-300 
+           focus:outline-none focus:ring-2 focus:ring-ios-blue focus:border-transparent
+           bg-white transition-all duration-200;
+  }
+  .ayaz-input {
+    @apply w-full px-4 py-2.5 rounded-ayaz border border-ayaz-gray-300 
+           focus:outline-none focus:ring-2 focus:ring-ayaz-blue focus:border-transparent
+           bg-white transition-all duration-200;
+  }
+  
+  .ios-select {
+    @apply w-full px-4 py-2.5 rounded-ios border border-ios-gray-300 
+           focus:outline-none focus:ring-2 focus:ring-ios-blue focus:border-transparent
+           bg-white cursor-pointer transition-all duration-200;
+  }
+  .ayaz-select {
+    @apply w-full px-4 py-2.5 rounded-ayaz border border-ayaz-gray-300 
+           focus:outline-none focus:ring-2 focus:ring-ayaz-blue focus:border-transparent
+           bg-white cursor-pointer transition-all duration-200;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-ios-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-ios-gray-400 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-ios-gray-500;
+}
+

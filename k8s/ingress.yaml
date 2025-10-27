@@ -1,0 +1,54 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ayaztrade-ingress
+  namespace: ayaztrade
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/rate-limit-connections: "10"
+    nginx.ingress.kubernetes.io/rate-limit-requests: "100"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # Custom rate limiting based on endpoint
+      if ($uri ~* "^/api/v1/auth/") {
+        set $rate_limit "5r/s";
+      }
+      if ($uri ~* "^/api/v1/admin/") {
+        set $rate_limit "20r/s";
+      }
+      if ($uri ~* "^/api/v1/") {
+        set $rate_limit "10r/s";
+      }
+      if ($uri = "/") {
+        set $rate_limit "50r/s";
+      }
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # DDoS protection
+      if ($http_user_agent ~* (bot|crawler|spider|scraper)) {
+        return 403;
+      }
+      
+      # Block suspicious patterns
+      if ($request_uri ~* (\.\.|\.\./|\.\.\\|\.\.%2f|\.\.%5c)) {
+        return 403;
+      }
+spec:
+  tls:
+  - hosts:
+    - api.ayaztrade.com
+    secretName: ayaztrade-tls
+  rules:
+  - host: api.ayaztrade.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ayaztrade-api-service
+            port:
+              number: 5000

@@ -1,0 +1,135 @@
+AyazTrade 2025 Kapsamlı Kod İnceleme ve Yol Haritası Raporu
+
+1) Özet
+- Backend: NestJS 10, TypeScript 5, Drizzle ORM + Prisma birlikte kullanımı, PostgreSQL, Redis, Elasticsearch, Kafka opsiyonlu kuyruk, JWT auth iskeleti, gelişmiş güvenlik guard/middleware seti, Prometheus/Health hazır config.
+- Frontend: Next.js 14 tabanlı admin/storefront/b2b portalları ve Expo (RN) mobil. Bağlantı katmanları hazır; ancak backend tarafında pek çok uç noktada mock veri kullanımı mevcut.
+- DevOps: Dockerfile, docker-compose, k8s manifestleri, Nginx reverse proxy, prom konfigleri mevcut. CI bilgisi görünmüyor.
+- Test: Jest yapılandırmaları var; ancak e2e/integration altında mock ağırlıkta testler bulunuyor. build-output ve tsc-errors dosyaları tip/derleme sorunlarına işaret ediyor.
+
+2) Mimari ve Teknoloji Yığını
+- Nest çekirdeği: global prefix "api/v1", helmet, compression, global guards (DDoS, RateLimit), exception filters, Swagger kurulumu mevcut.
+- Modüller: CRM, ERP, WMS, Products, Orders, Customers, Cart, Analytics vb. iskeletler mevcut.
+- Veri Katmanı: Drizzle schema’ları kapsamlı; aynı anda PrismaClient kullanımı bulunuyor. DatabaseService iki sürücüyü de başlatıyor. Bu ikili kullanım net bir stratejiye bağlanmalı.
+- Cache: ioredis ile manuel cache servisi. Guard’lar CacheManager bekliyor, ancak CacheModule Nest cache-manager’ı sağlamıyor.
+- Güvenlik: DDoSProtectionGuard, RateLimitGuard, request sanitization vs. var. AuthModule minimal, Jwt stratejisi wiring eksik.
+- Gözlemlenebilirlik: Prometheus, health endpoints ve k8s prob’ları tanımlı; bazı yollar uyumsuz (k8s prob yolları vs gerçek controller yolları).
+
+3) Tespit Edilen Sorunlar ve Riskler
+- Tip Hataları: tsc-errors.txt çıktısı drizzle entity import’ları bulunan sınıflarda (cart/cart-item) hatalar veriyor; entity sınıfları Drizzle schema ile aynı dosyada veya tip çıkarımıyla eşgüdümlü değil.
+- Çift ORM: Prisma ve Drizzle bir arada. Exception filter Prisma’ya özel hataları işliyor; TypeORM artıkları da kodda kalmış (QueryFailedError). Strateji net değil; teknik borç.
+- Auth Eksikleri: AuthModule boş; JwtModule, JwtStrategy, Passport modülleri ve Guards bağlanmamış. JwtAuthGuard çalışsa bile strategy yoksa 401 üretir.
+- Cache/RateLimit Tutarsızlığı: RateLimitGuard, CACHE_MANAGER token’ı bekliyor; fakat CacheModule içinde Nest’in CacheModule.forRoot kullanılmıyor. ioredis tabanlı servis sağlanıyor ama CACHE_MANAGER inject edilmiyor.
+- Health/Probes Uyumsuzluğu: k8s liveness/readiness yolları /health/liveness ve /health/readiness; gerçek controller’da /health, /health/ready, /health/live. Uyumsuzluk var.
+- Config Tutarsızlıkları: DATABASE_HOST vs DB_HOST, DATABASE_NAME vs DB_DATABASE gibi değişken adları farklı yerlerde kullanılıyor.
+- Nginx Healthcheck: Dockerfile healthcheck’i /health çağırıyor; app global prefix ‘api/v1’. Proxy’de de /health proxy_pass var. Uç yollar uyumsuz olabilir.
+- ProductsService Mock: Ürün uçları mock veri döndürüyor; DB erişimi yok. Frontend entegrasyonu için gerçek repo gerekir.
+- AuthService Mock: register/login/profile vs. tamamı mock; güvenlik ve iş akışı gerçek değil.
+- DrizzleModule / DatabaseModule Çakışması: DRIZZLE_ORM token’ı iki farklı module’de tanımlı. Tekil sağlayıcıya indirilmeli.
+
+4) 2025 Standartlarına Göre Önerilen İyileştirmeler ve Yeni Özellikler
+A) Mimari & Kod Sağlığı
+- ORM Stratejisi: Tek ORM seç. Öneri: Drizzle ORM (schema-first, typed). Prisma kaldırılacaksa tüm referanslar (GlobalExceptionFilter, DatabaseService, package.json scriptleri) temizlenmeli.
+- Modülerleşme: Her modül için application/service/domain ayrımı ve DTO/Schema ayrımı; mock servisler yerine repository pattern.
+- Tip Güvenliği: strictNullChecks, noImplicitAny, forceConsistentCasingInFileNames’i true yap. test/include/exclude ve path alias’ları konsolide et.
+- ExceptionPolicy: Sadece kullanılan veri katmanına uygun hata sınıfları. GlobalExceptionFilter’den TypeORM/Prisma kaldırılmalı veya conditionally import edilmeli.
+
+B) Güvenlik
+- Kimlik Doğrulama: JwtModule.registerAsync + JwtStrategy + PassportModule wiring. Refresh token rotation, token blacklist/store, MFA opsiyonel.
+- Yetkilendirme: ABAC/RBAC policy guards, route-level permission decorator’ları.
+- Rate Limit & DDoS: Nest CacheModule.forRootAsync + redis-store ile CACHE_MANAGER kur. Guard’ları buna geçir.
+- Girdi Güvenliği: class-validator şemalarını DTO’lara ekle; RequestSanitizer kapsamını genişlet.
+- Sızma Testi: OWASP ASVS checklist, güvenlik E2E testleri ve dependency scanning (Snyk/GHAS).
+
+C) Performans & Gözlemlenebilirlik
+- Caching: Response caching ve data caching (Redis) katmanı; invalidation stratejileri.
+- Query Optimizasyonu: Drizzle ile index kullanım denetimleri, N+1 kontrolleri, pagination keyset.
+- Telemetri: OpenTelemetry SDK + OTLP exporter (Tempo/Jaeger). request-id korrelasyon.
+- Metrics: prom-client ile HTTP, DB, cache metrikleri; RED metrics dashboard.
+
+D) DevOps & CI/CD
+- CI: GitHub Actions/Runner: lint, type-check, test, build, docker build/push, k8s deploy (ArgoCD veya helm chart).
+- Secrets: .env usage yerine k8s Secret, SOPS/SealedSecrets.
+- İmaj: Node 20 LTS, distroless veya slim; non-root kullanıcı; SBOM üretimi (syft/grype), imza (cosign), supply chain (SLSA/gitleaks).
+- IaC: Helm chart, kustomize overlay’ler (dev/stage/prod). Probes yollarını güncelle.
+
+E) Özellik Seti (2025)
+- Çoklu Mağaza ve Çoklu Para Birimi: fiyatlandırma kuralları, vergi kuralları.
+- Arama: Elasticsearch ile typo-tolerant search, suggestion, category facets.
+- Ödeme: Stripe + Iyzico prod, 3D Secure akış, webhook doğrulama.
+- Lojistik/WMS: carrier entegrasyonları, SLA metrikleri, iade süreçleri.
+- Pazaryeri: Hepsiburada/Trendyol/Ticimax entegrasyonları için connector modülleri.
+- Bildirim: E-posta/SMS/WhatsApp şablon altyapısı ve tercih yönetimi.
+- Raporlama/BI: Pre-computed KPI’lar, scheduled reports, export/import modülleri.
+- Admin UX: Audit log, versioned settings, feature flags (unleash/go-feature-flag), access log ekranları.
+
+5) Somut Yapılandırma ve Kod Düzeltmeleri (Yüksek Öncelik)
+- K8s Probes:
+  - readiness: /health/ready
+  - liveness: /health/live
+  - Eğer global prefix aktifse: /api/v1/health/ready ve /api/v1/health/live
+- Nginx/Healthcheck:
+  - Dockerfile healthcheck: /api/v1/health (veya /health/live) ile uyumlu hale getir.
+  - nginx.conf içinde /metrics ve /health yollarını prefix ile hizala.
+- Env Adlandırma:
+  - Tüm yerlerde DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD veya DATABASE_URL tek yaklaşım.
+  - DatabaseModule’de kullanılan değişken adlarını env.example ile hizala.
+- CacheManager Entegrasyonu:
+  - @nestjs/cache-manager + ioredis store kullan. RateLimitGuard CACHE_MANAGER ile uyumlu çalışsın.
+- Auth Wiring:
+  - AuthModule: PassportModule.register, JwtModule.registerAsync(getJwtConfig), JwtStrategy, JwtAuthGuard global veya controller bazlı.
+- ProductsService:
+  - Mock kaldır; Drizzle repository ekle, DTO + validation ile CRUD ve arama gerçek DB’ye bağlansın.
+- ExceptionFilter:
+  - Prisma/TypeORM bağımlılıkları kaldır veya build-time optional strategy ile yönetiştir.
+- DRIZZLE_ORM Provider:
+  - Tek bir module’den export et (DatabaseModule). DrizzleModule kaldır/entegre et.
+- TS Config Sertleştirme:
+  - strict: true, noImplicitAny: true, strictNullChecks: true vb. ve linter kuralları.
+
+6) Test ve Kalite
+- Unit: Service/Repository için gerçek testler (mock DB), Guard/Middleware testleri.
+- Integration: Modül bazlı flows; DB test container (Testcontainers) ile.
+- E2E: Auth, Cart, Checkout, Payment flow; contract test (Pact) ile frontend senkronizasyonu.
+- Coverage: %80+ lines, kritik modüllerde %90+.
+
+7) Yol Haritası (Önerilen Sprintler)
+- Sprint 1: ORM tekilleştirme, ExceptionFilter temizlik, Auth wiring, Probes/Health uyumu, CacheManager entegrasyonu.
+- Sprint 2: Products gerçek DB, Categories/Reviews ekleme, arama için ES indexleme, DTO/validation.
+- Sprint 3: Orders/Cart/Checkout akışı, ödeme sağlayıcıları ve webhook doğrulama.
+- Sprint 4: Gözlemlenebilirlik (OTEL), performans optimizasyonları, caching stratejisi.
+- Sprint 5: CI/CD, güvenlik taramaları, SBOM/imaj imzalama, staging/prod release.
+
+8) %100 Çalışırlık İçin Kontrol Listesi
+- Env:
+  - .env üret, tüm modüllerle hizala, secrets’ı .env’den çıkar.
+- DB:
+  - Drizzle schema -> migration -> apply; seed verisi.
+- Auth:
+  - JwtStrategy + Guards, refresh/token rotation, password hashing, email doğrulama akışları.
+- API:
+  - Products/Orders/Customers gerçek DB, pagination/sort/filters, validation.
+- Search:
+  - ES kur, index mapping, sync jobs, query API.
+- Cache/RateLimit:
+  - Redis bağlantı, TTL politikaları, invalidation, guard uyumu.
+- Payments:
+  - Stripe/Iyzico sandbox test, webhook handler ve signature doğrulama.
+- Notifications:
+  - Email/SMS/WhatsApp provider’ları test, şablonlar.
+- Observability:
+  - Prometheus metrics, OTEL tracing, log format uyumu; dashboardlar.
+- DevOps:
+  - Docker image build/run, k8s deploy, probes, HPA, TLS; CI pipelines.
+- QA:
+  - Jest unit/integration/E2E, contract tests, accessibility/performance testleri; coverage raporu.
+
+9) Hızlı Kazanımlar (Quick Wins)
+- K8s probe yollarını düzelt.
+- Dockerfile healthcheck yolunu API prefix ile hizala.
+- GlobalExceptionFilter’den TypeORM/Prisma referanslarını kaldır.
+- AuthModule’i gerçek JwtStrategy ile bağla.
+- RateLimitGuard için Nest CacheModule + redis store ekle.
+- ProductsService’i Drizzle repository ile veritabanına bağla.
+
+10) Sonuç
+- Kod tabanı güçlü bir iskelete sahip ancak mock ve tutarsızlıklar nedeniyle prod seviyesinde değil. Bu rapordaki düzeltmeler ve yol haritası uygulandığında 2025 standartlarına uygun, izlenebilir, güvenli ve ölçeklenebilir bir sürüm elde edilir.

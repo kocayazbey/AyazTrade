@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+bases:
+  - ../../base
+
+namespace: ayaztrade-dev
+
+resources:
+  - namespace.yaml
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+    target:
+      kind: Deployment
+      name: ayaztrade-api
+
+  - patch: |-
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/resources/limits/cpu
+        value: 500m
+    target:
+      kind: Deployment
+      name: ayaztrade-api
+
+configMapGenerator:
+  - name: app-config
+    behavior: merge
+    literals:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug

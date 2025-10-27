@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ayaztrade
+
+resources:
+- namespace.yaml
+- configmap.yaml
+- secret.yaml
+- pvc.yaml
+- postgres.yaml
+- redis.yaml
+- elasticsearch.yaml
+- deployment.yaml
+- service.yaml
+- ingress.yaml
+- hpa.yaml
+ - keda-scaledobject-email.yaml
+
+commonLabels:
+  app.kubernetes.io/name: ayaztrade
+  app.kubernetes.io/version: "1.0.0"
+  app.kubernetes.io/managed-by: kustomize

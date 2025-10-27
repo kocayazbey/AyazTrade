@@ -1,0 +1,103 @@
+.ayu-card {
+  background-color: var(--ayu-white);
+  border-radius: var(--ayu-radius-lg);
+  overflow: hidden;
+  transition: all var(--ayu-transition-normal);
+}
+
+.ayu-card--default {
+  box-shadow: var(--ayu-shadow-sm);
+  border: 1px solid var(--ayu-gray-200);
+}
+
+.ayu-card--elevated {
+  box-shadow: var(--ayu-shadow-lg);
+  border: none;
+}
+
+.ayu-card--outlined {
+  box-shadow: none;
+  border: 1px solid var(--ayu-gray-300);
+}
+
+.ayu-card--sm .ayu-card__header,
+.ayu-card--sm .ayu-card__body,
+.ayu-card--sm .ayu-card__footer {
+  padding: var(--ayu-space-4);
+}
+
+.ayu-card--md .ayu-card__header,
+.ayu-card--md .ayu-card__body,
+.ayu-card--md .ayu-card__footer {
+  padding: var(--ayu-space-6);
+}
+
+.ayu-card--lg .ayu-card__header,
+.ayu-card--lg .ayu-card__body,
+.ayu-card--lg .ayu-card__footer {
+  padding: var(--ayu-space-8);
+}
+
+.ayu-card__header {
+  border-bottom: 1px solid var(--ayu-gray-200);
+  background-color: var(--ayu-gray-50);
+}
+
+.ayu-card__title {
+  font-size: var(--ayu-font-size-lg);
+  font-weight: 600;
+  color: var(--ayu-gray-900);
+  margin: 0 0 var(--ayu-space-1) 0;
+}
+
+.ayu-card__subtitle {
+  font-size: var(--ayu-font-size-sm);
+  color: var(--ayu-gray-600);
+  margin: 0;
+}
+
+.ayu-card__body {
+  color: var(--ayu-gray-800);
+}
+
+.ayu-card__footer {
+  border-top: 1px solid var(--ayu-gray-200);
+  background-color: var(--ayu-gray-50);
+}
+
+/* Hover Effects */
+.ayu-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ayu-shadow-md);
+}
+
+.ayu-card--elevated:hover {
+  box-shadow: var(--ayu-shadow-xl);
+}
+
+/* Focus States */
+.ayu-card:focus-within {
+  outline: 2px solid var(--ayu-primary);
+  outline-offset: 2px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .ayu-card--sm .ayu-card__header,
+  .ayu-card--sm .ayu-card__body,
+  .ayu-card--sm .ayu-card__footer {
+    padding: var(--ayu-space-3);
+  }
+  
+  .ayu-card--md .ayu-card__header,
+  .ayu-card--md .ayu-card__body,
+  .ayu-card--md .ayu-card__footer {
+    padding: var(--ayu-space-4);
+  }
+  
+  .ayu-card--lg .ayu-card__header,
+  .ayu-card--lg .ayu-card__body,
+  .ayu-card--lg .ayu-card__footer {
+    padding: var(--ayu-space-6);
+  }
+}
