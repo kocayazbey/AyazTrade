@@ -4,16 +4,7 @@ import { RateLimitOptions, RATE_LIMIT_METADATA } from '../rate-limit.guard';
 export const RATE_LIMIT_KEY = 'rate_limit';
 export const THROTTLE_SKIP_KEY = 'skip_throttle';
 
-// Import decorators from throttler.guard (for compatibility)
-export {
-  SkipThrottle,
-  CustomRateLimit,
-  AuthRateLimit,
-  ApiRateLimit,
-  StrictRateLimit,
-  UploadRateLimit,
-  SearchRateLimit,
-} from '../guards/throttler.guard';
+// Note: Importing decorators from throttler.guard causes conflicts, removed
 
 // Re-export RateLimitOptions for consistency
 export type { RateLimitOptions } from '../rate-limit.guard';
